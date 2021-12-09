@@ -4,12 +4,13 @@ const path = require('path')
 const EventEmitter = require('events').EventEmitter
 const mapSeries = require('p-each-series')
 const { default: PQueue } = require('p-queue')
+const CRC32 = require('crc-32')
 const Log = require('ipfs-log')
 const Entry = Log.Entry
+
 const Index = require('./Index')
 const Replicator = require('./Replicator')
 const ReplicationInfo = require('./replication-info')
-
 const Logger = require('logplease')
 const logger = Logger.create('orbit-db.store', { color: Logger.Colors.Blue })
 Logger.setLogLevel('ERROR')
@@ -51,6 +52,7 @@ class Store {
     this.snapshotPath = path.join(this.id, 'snapshot')
     this.queuePath = path.join(this.id, 'queue')
     this.manifestPath = path.join(this.id, '_manifest')
+    this._watermarks = {}
 
     // External dependencies
     this._ipfs = ipfs
@@ -113,6 +115,7 @@ class Store {
           }
           this._replicationStatus.queued -= logs.length
           this._replicationStatus.buffered = this._replicator._buffer.length
+          // TODO
           await this._updateIndex()
 
           // only store heads that has been verified and merges
@@ -263,6 +266,7 @@ class Store {
 
     // Update the index
     if (heads.length > 0) {
+      // TODO
       await this._updateIndex()
     }
 
@@ -299,7 +303,16 @@ class Store {
       }
 
       const logEntry = Entry.toEntry(head)
-      const hash = await io.write(this._ipfs, Entry.getWriteFormat(logEntry), logEntry, { links: Entry.IPLD_LINKS, onlyHash: true })
+      const hash = 
+              await io.write(
+                      this._ipfs, 
+                      Entry.getWriteFormat(logEntry), 
+                      logEntry, 
+                      { 
+                        links: Entry.IPLD_LINKS, 
+                        onlyHash: true,
+                        web3Storage: this.options.web3Storage
+                      })
 
       if (hash !== head.hash) {
         console.warn('"WARNING! Head hash didn\'t match the contents')
@@ -384,6 +397,7 @@ class Store {
       if (snapshotData) {
         const log = await Log.fromJSON(this._ipfs, this.identity, snapshotData, { access: this.access, sortFn: this.options.sortFn, length: -1, timeout: 1000, onProgressCallback: onProgress })
         await this._oplog.join(log)
+        // TODO
         await this._updateIndex()
         this.events.emit('replicated', this.address.toString()) // TODO: inconsistent params, count param not emited
       }
@@ -395,9 +409,43 @@ class Store {
     return this
   }
 
-  async _updateIndex () {
+  addWatermark(hash, watermark) {
+    this._watermarks[hash] = watermark
+  }
+  
+  createWatermark() {
+    const state = this._index.state()
+    const watermark = CRC32.str(JSON.stringify(state))
+
+    return watermark
+  }
+
+  async _updateIndex (newLogs) {
+    // Does this have to happen after the new logs have been added to the log?
     this._recalculateReplicationMax()
-    await this._index.updateIndex(this._oplog)
+
+    // iterate over entries in new log
+    newLogs.forEach(log => {
+      // determine if op is latest 
+      const isLatest = true
+      // if not latest
+      if(!isLatest){
+        // revert index to watermark to latest
+
+          // find previous watermark
+          // clear index to watermark
+        // update index with all entries since watermark
+          // add entry to index
+        // if XXX entries since last watermark
+          if (this._oplog.length % WATERMARK_INTERVAL === 0) {
+            // create new watermark
+            this.createWatermark()
+        }
+      }
+    })
+
+    await this._index.updateIndex(this._oplog, newLogs)
+
     this._recalculateReplicationProgress()
   }
 
@@ -425,6 +473,7 @@ class Store {
         const entry = await this._oplog.append(data, this.options.referenceCount, pin)
         this._recalculateReplicationStatus(this.replicationStatus.progress + 1, entry.clock.time)
         await this._cache.set(this.localHeadsPath, [entry])
+        // TODO
         await this._updateIndex()
         this.events.emit('write', this.address.toString(), entry, this._oplog.heads)
         if (onProgressCallback) onProgressCallback(entry)
